@@ -1,0 +1,17 @@
+# Compile this file for changes to take effect:
+# pip-compile requirements.in > requirements.txt
+#
+# view outdated packages:
+# pip list --outdated
+#
+# cache a copy of dependencies:
+# cd .pip-cache
+# pip download --cache-dir . -r ../requirements.txt
+#
+
+click
+email-validator
+InquirerPy
+Jinja2
+
+pip-tools  # needed for compilation of this file into requirements.txt, see start of file
