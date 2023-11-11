@@ -10,10 +10,15 @@ Requires the following environment varilables set with the SMTP settings:
 ## Installation
 
 ```
+cd email-blaster
 python3 -mvenv env
 source env/bin/activate
 pip install -r requirements.txt
+mkdir templates
 ```
+
+Create the `templates` directory and place your email templates there.  Create a `.html` and `.txt` file with the same filename to send a MIME encoded multi-part email with both options (generally good email practice).
+
 
 ## Usage
 
