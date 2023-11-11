@@ -4,7 +4,7 @@ import click
 import csv
 import os
 import smtplib
-import subprocess
+import time
 
 from email_validator import validate_email, EmailNotValidError
 from email.mime.multipart import MIMEMultipart
@@ -27,16 +27,12 @@ jinja_env = Environment(
     autoescape=select_autoescape()
 )
 
-
-def get_file_lines(filename):
-    """
-    Use wc to count the number of lines in the csv file.
-    """
-    output = subprocess.check_output([
-        "/usr/bin/wc", os.path.expanduser(filename)
-    ])
-
-    return int(output.split()[0])
+# Load the available templates (breaking out the file extensions)
+TEMPLATES = {}
+for file in os.listdir("templates"):
+    fileparts = os.path.splitext(file)
+    TEMPLATES.setdefault(fileparts[0], [])
+    TEMPLATES[fileparts[0]].append(fileparts[1])
 
 
 def handle_smtp_error(error):
@@ -56,35 +52,50 @@ def handle_smtp_error(error):
 
     exit(1)
 
-def create_message(mail_to, mail_from, mail_from_name, subject, message_text):
+def create_message(mail_to, mail_from, subject, template_key, data):
     """Create the MIME Multipart message
 
     Args:
         mail_to (str): Email to
         mail_from (str): Email from
         subject (str): Email subject
-        message_text (str): Plain text message
+        template (str): Template name
+        data: Data to pass to template during render
 
     Returns:
         _type_: _description_
     """
     msg = MIMEMultipart()
     msg["Subject"] = subject
-    if mail_from_name:
-        msg["From"] = f"{mail_from_name} <{mail_from}>"
-    else:
-        msg["From"] = mail_from
+    msg["From"] = mail_from
     msg["To"] = formataddr(("", mail_to))
     msg.preamble = "This is a multi-part message in MIME format"
 
     msgalt = MIMEMultipart("alternative")
     msg.attach(msgalt)
 
-    msgalt.attach(MIMEText(message_text, "plain", "US-ASCII"))
+    # Render each available template type and attach to multipart message
+    for ext in TEMPLATES[template_key]:
+        template = jinja_env.get_template(f"{template_key}{ext}")
+        content = template.render(data=data, **data)
+
+        # try to determine character set
+        for charset in ["US-ASCII", "ISO-8859-1", "UTF-8"]:
+            try:
+                content.encode(charset)
+            except UnicodeError:
+                pass
+            else:
+                break
+
+        if ext.lower() in [".html", ".htm"]:
+            msgalt.attach(MIMEText(content.encode(charset), "html", charset))
+        else:
+            msgalt.attach(MIMEText(content, "plain", charset))
 
     return msg
 
-def send_email(mail_to, mail_from, mail_from_name, subject, message_text):
+def send_email(mail_to, mail_from, message):
     """Send an email via smtp
 
     Args:
@@ -116,10 +127,12 @@ def send_email(mail_to, mail_from, mail_from_name, subject, message_text):
         except smtplib.SMTPException as err:
             handle_smtp_error(err)
 
-    msg = create_message(mail_to, mail_from, mail_from_name, subject, message_text)
-
     try:
-        smtp.sendmail(from_addr=mail_from, to_addrs=[mail_to], msg=msg.as_string())
+        smtp.sendmail(
+            from_addr=mail_from,
+            to_addrs=[mail_to],
+            msg=message.as_string()
+        )
     except smtplib.SMTPException as err:
         handle_smtp_error(err)
 
@@ -128,10 +141,12 @@ def send_email(mail_to, mail_from, mail_from_name, subject, message_text):
 @click.option("--csv", prompt="CSV File", help="The CSV file containing data for mail merge.")
 @click.option("--template", help="Email template to user for the mail merge.")
 @click.option("--mail-from-name", help="Name of the email sender.")
+@click.option("--subject", help="Email Subject")
 @click.option("--dry-run", help="Send to this email address for testing")
 def main(*args, **kwargs):
     csv_file = kwargs["csv"]
     email_column = "email"
+    subject = kwargs.get("subject")
 
     # The CSV data
     with open(csv_file, "r") as csvfile:
@@ -163,18 +178,19 @@ def main(*args, **kwargs):
         "type": "list",
         "name": "template",
         "message": "Please select the email template to use",
-        "choices": os.listdir("templates")
+        "choices": TEMPLATES.keys()
     })
+
+    if not subject:
+        questions.append({
+            "type": "input",
+            "name": "subject",
+            "message": "Please enter the email subject line:",
+        })
 
     questions.append({
         "type": "input",
-        "name": "subject",
-        "message": "Please enter the email subject line:",
-    })
-
-    questions.append({
-        "type": "input",
-        "name": "mail_from",
+        "name": "mail_from_addr",
         "message": "Send email from address: ",
         "default": SMTP_SETTINGS["mail_from"]
     })
@@ -190,20 +206,23 @@ def main(*args, **kwargs):
     # Check that headers include an email address column
     answers = prompt(questions)
     email_column = answers.get("email_column")
-    template = jinja_env.get_template(answers.get("template"))
-    subject = answers.get("subject")
-    mail_from = answers.get("mail_from")
+    template = answers.get("template")
+    subject = answers.get("subject", subject)
+    mail_from_addr = answers.get("mail_from_addr")
     mail_from_name = answers.get("mail_from_name", kwargs.get("mail_from_name"))
+
+    # Format the mail from address
+    mail_from = mail_from_addr
+    if mail_from_name:
+        mail_from = f"{mail_from_name} <{mail_from_addr}>"
 
     print("\n--------------------------------------------------")
     print("%25s: %d data rows" % (os.path.split(csv_file)[-1], csv_lines))
-    print(f"     Using Email Template: {template.name}")
+    print(f"     Using Email Template: {template} " + str(TEMPLATES[template]))
     print(f"            Email Subject: {subject}")
-    # print("            Email Backend: %s" % settings.EMAIL_BACKEND)
-    if mail_from_name:
-        print(f"          Send Email From: {mail_from_name} <{mail_from}>")
-    else:
-        print(f"          Send Email From: {mail_from}")
+    print(f"              SMTP Server: {SMTP_SETTINGS['smtp_host']}")
+    print(f"                SMTP User: {SMTP_SETTINGS['smtp_user']}")
+    print(f"          Send Email From: {mail_from}")
     if kwargs["dry_run"]:
         print(f"        DRY RUN Emails To: {kwargs['dry_run']}")
     else:
@@ -214,9 +233,8 @@ def main(*args, **kwargs):
     if not proceed:
         exit(0)
 
-    for row in rows[:1]:
+    for row in rows:
         data = dict(zip(headers, row))
-
         mail_to = data[email_column]
 
         # Verify the mail_to looks like an email address
@@ -227,20 +245,25 @@ def main(*args, **kwargs):
         except EmailNotValidError as err:
             print(f"Row contains invalid email address ({mail_to}), skipping")
             continue
- 
+
         if kwargs["dry_run"]:
             mail_to = kwargs["dry_run"]
             print(f"mail to: {data[email_column]} (dry run to: {mail_to})")
         else:
             print(f"mail to: {mail_to}")
 
-        # import pdb; pdb.set_trace()
-        msg = template.render(data=data, **data)
-
-        # print(msg)
-        send_email(mail_to, mail_from, mail_from_name, subject, msg)
+        msg = create_message(
+            mail_to=mail_to,
+            mail_from=mail_from,
+            subject=subject,
+            template_key=template,
+            data=data
+        )
+        send_email(mail_to, mail_from_addr, msg)
+        
+        # a little delay to avoid spamming
+        time.sleep(0.5)
 
 
 if __name__ == "__main__":
     main()
- 
