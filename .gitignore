@@ -81,3 +81,8 @@ target/
 Icon\r
 *.swp
 *.code-workspace
+
+# don't save any data files
+*.csv
+templates/*.html
+templates/*.txt
